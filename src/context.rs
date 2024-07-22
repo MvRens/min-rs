@@ -4,6 +4,7 @@ use crate::transport::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::{warn, debug, trace};
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 const CRC_SEED: u32 = 0xffffffff;
 const CRC_REVERSED: bool = true;
@@ -61,12 +62,12 @@ impl Msg {
     }
 }
 /// context for MIN.
-pub struct Context<'a, T> where T: crate::Interface {
+pub struct Context<T> where T: crate::Interface {
     pub name: String,
     /// Use transport protocol
     pub t_min:  bool,
     /// Hardwar interface
-    pub hw_if: &'a T,
+    pub hw_if: Arc<Mutex<T>>,
     transport: Transport,
     /// Number of the port associated with the context
     port: u8,
@@ -97,7 +98,7 @@ pub struct Context<'a, T> where T: crate::Interface {
     msg_queue: VecDeque<Msg>,
 }
 
-impl<'a, T> Context<'a, T> where T: crate::Interface {
+impl<T> Context<T> where T: crate::Interface {
     
     fn msg_enqueue(&mut self) {
         let msg = Msg::new(self.rx_frame_id_control & 0x3f, &self.rx_frame_payload_buf, self.rx_control, self.port);
@@ -112,14 +113,14 @@ impl<'a, T> Context<'a, T> where T: crate::Interface {
 
     fn stuffed_tx_byte(&mut self, byte: u8) {
         // Transmit the byte
-        self.hw_if.tx_byte(self.port, byte);
+        self.hw_if.lock().unwrap().tx_byte(self.port, byte);
 
         self.tx_checksum.step(byte);
 
         if byte == HEADER_BYTE {
             self.tx_header_byte_countdown -= 1;
             if self.tx_header_byte_countdown == 0 {
-                self.hw_if.tx_byte(self.port, STUFF_BYTE);
+                self.hw_if.lock().unwrap().tx_byte(self.port, STUFF_BYTE);
                 self.tx_header_byte_countdown = 2;
             }
         } else {
@@ -140,12 +141,13 @@ impl<'a, T> Context<'a, T> where T: crate::Interface {
         self.tx_header_byte_countdown = 2;
         self.tx_checksum = Crc32Context::new(CRC_SEED, CRC_REVERSED, CRC_REFIN, CRC_REFOUT);
 
-        self.hw_if.tx_start();
+        // let hw_if = self.hw_if.lock().unwrap();
+        self.hw_if.lock().unwrap().tx_start();
 
         // Header is 3 bytes; because unstuffed will reset receiver immediately
-        self.hw_if.tx_byte(self.port, HEADER_BYTE);
-        self.hw_if.tx_byte(self.port, HEADER_BYTE);
-        self.hw_if.tx_byte(self.port, HEADER_BYTE);
+        self.hw_if.lock().unwrap().tx_byte(self.port, HEADER_BYTE);
+        self.hw_if.lock().unwrap().tx_byte(self.port, HEADER_BYTE);
+        self.hw_if.lock().unwrap().tx_byte(self.port, HEADER_BYTE);
 
         self.stuffed_tx_byte(id_control);
         if id_control & 0x80 == 0x80 {
@@ -169,14 +171,14 @@ impl<'a, T> Context<'a, T> where T: crate::Interface {
         self.stuffed_tx_byte(checksum as u8 & 0xff);
 
         // Ensure end-of-frame doesn't contain 0xaa and confuse search for start-of-frame
-        self.hw_if.tx_byte(self.port, EOF_BYTE);
+        self.hw_if.lock().unwrap().tx_byte(self.port, EOF_BYTE);
 
-        self.hw_if.tx_finished();
+        self.hw_if.lock().unwrap().tx_finished();
     }
 
     // send transport protocol frame on wire.
     fn on_wire_t_frame(&mut self, id: u8, seq: u8, payload: &[u8], len: u8) -> Result<u8, Error> {
-        let avaliable_for_send = self.hw_if.tx_space();
+        let avaliable_for_send = self.hw_if.lock().unwrap().tx_space();
         if self.on_wire_size(len) <= avaliable_for_send {
             trace!(target: format!("{}", self.name).as_str(), "on_wire_t_frame: min_id={}, seq={}, payload_len={}", id, seq, len);
             self.on_wire_bytes(id | 0x80_u8, seq, payload, 0, 0xffff, len);
@@ -440,7 +442,7 @@ impl<'a, T> Context<'a, T> where T: crate::Interface {
     }
 }
 
-impl<'a, T> Context<'a, T> where T: crate::Interface{
+impl<T> Context<T> where T: crate::Interface{
     /// Construct a `Context` for MIN.
     /// # Arguments
     /// * `name` - identifier string for debug.
@@ -453,7 +455,7 @@ impl<'a, T> Context<'a, T> where T: crate::Interface{
     /// * `tx_byte` - Callback. Sends a byte on the given line.
     pub fn new(
         name: String,
-        hw_if: &'a T,
+        hw_if: Arc<Mutex<T>>,
         port: u8,
         t_min: bool,
     ) -> Self {
@@ -486,7 +488,7 @@ impl<'a, T> Context<'a, T> where T: crate::Interface{
     /// * `payload` - data to send
     /// * `len` - length of payload
     pub fn send_frame(&mut self, id: u8, payload: &[u8], len: u8) -> Result<u8, Error> {
-        let avaliable_for_send = self.hw_if.tx_space();
+        let avaliable_for_send = self.hw_if.lock().unwrap().tx_space();
         if self.on_wire_size(len) <= avaliable_for_send {
             self.on_wire_bytes(id & 0x3f_u8, 0, payload, 0, 0xffff, len);
             Ok(len)
