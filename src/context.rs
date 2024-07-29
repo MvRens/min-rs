@@ -193,7 +193,7 @@ impl<T> Context<T> where T: crate::Interface {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(std::time::Duration::from_secs(0)).as_millis();
         self.transport.last_received_anything_ms = now;
         // 这个地方需要发送找到的 frame，并且修改该 frame 的最后发送时间。由于借用规则的限制，需要分两步完成。
-        if let Some(mut frame) = self.transport.frames.get_mut(idx) {
+        if let Some(frame) = self.transport.frames.get_mut(idx) {
             frame.last_sent_time_ms = now;
             if update_seq {
                 frame.seq = self.transport.sn_max;
